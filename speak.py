@@ -71,6 +71,7 @@ VOICEVOX_DEFAULT_HOST = "http://127.0.0.1:50021"
 DEFAULT_SPEAKER = 3
 DEFAULT_SPEED = 1.0
 MAX_CHARS = 500
+OVERFLOW_TEXT = "以下省略"  # maxChars 超過時に末尾で読む言葉（overflowText 設定。空文字なら黙って打ち切る）
 
 CONFIG_PATH = Path.home() / ".voicevox-tts.json"
 FLAG_PATH = Path.home() / ".voicevox-tts-enabled"
@@ -424,9 +425,11 @@ def _format_steps(cfg: dict) -> str:
 
 def _synth_segment(text: str, speaker: int | None, speed: float) -> bytes:
     text = strip_ruby(text)
-    limit = load_config().get("maxChars", MAX_CHARS)
+    cfg = load_config()
+    limit = cfg.get("maxChars", MAX_CHARS)
     if len(text) > limit:
-        text = text[:limit] + "。以下省略。"
+        suffix = cfg.get("overflowText", OVERFLOW_TEXT)
+        text = text[:limit] + (f"。{suffix}。" if suffix else "")
     return synthesize(text, speaker, speed)
 
 
@@ -822,6 +825,7 @@ def cmd_config(args: list[str]):
         print(f"  speed:          {cfg.get('speed', DEFAULT_SPEED)}")
         print(f"  speedSteps:     {_format_steps(cfg)}")
         print(f"  maxChars:       {cfg.get('maxChars', MAX_CHARS)}")
+        print(f"  overflowText:   {cfg.get('overflowText', OVERFLOW_TEXT) or '(なし=黙って打ち切り)'}")
         print(f"  prePhoneme:     {cfg.get('prePhonemeLength', 0.8)}")
         print(f"  intonation:     {cfg.get('intonationScale', 1.0)}")
         print(f"  pause:          {cfg.get('pauseLengthScale', 1.0)}")
@@ -874,6 +878,9 @@ def cmd_config(args: list[str]):
         cfg["maxChars"] = max(100, min(2000, int(args[1])))
     elif key == "host":
         cfg["host"] = args[1]
+    elif key == "overflowText":
+        # 値なしで実行すると空文字（=超過分を黙って打ち切る）になる
+        cfg["overflowText"] = " ".join(args[1:])
     elif key == "enginePath":
         cfg["enginePath"] = args[1]
     elif key == "prePhonemeLength":
@@ -910,7 +917,7 @@ def cmd_config(args: list[str]):
     elif key == "requireLabel":
         cfg.setdefault("markers", {})["requireLabel"] = args[1].lower() in ("on", "true", "1")
     else:
-        print(f"Unknown key: {key} (speaker, speed, speedSteps, stepChars, maxChars, host, enginePath, favorites, autoStart, servePort, voiceTag, lineMarker, brackets, requireLabel)")
+        print(f"Unknown key: {key} (speaker, speed, speedSteps, stepChars, maxChars, overflowText, host, enginePath, favorites, autoStart, servePort, voiceTag, lineMarker, brackets, requireLabel)")
         return
     save_config(cfg)
     if key == "favorites":
@@ -1341,10 +1348,12 @@ def cmd_serve(args: list[str]):
         SERVE_STATE_PATH.unlink(missing_ok=True)
 
 
-def cmd_install_hook(args: list[str]):
-    """Claude Code のグローバル設定に Stop フックを追記する。
-    既存の設定は保持し、書き換える前にバックアップを作る。二重登録はしない（何度実行しても安全）。"""
-    settings_path = Path(args[0]) if args else Path.home() / ".claude" / "settings.json"
+def install_hook(settings_path: Path | None = None) -> dict:
+    """Claude Code のグローバル設定に Stop フックを追記する（CLI と GUI の共通本体）。
+    既存の設定は保持し、書き換える前にバックアップを作る。二重登録はしない（何度実行しても安全）。
+    設定ファイルが JSON として壊れているときは RuntimeError（壊れたまま上書きしない）。
+    返り値: {"status": "already"|"updated"|"added", "path", "command", "backup", "old"}"""
+    settings_path = settings_path or Path.home() / ".claude" / "settings.json"
     command = f"{self_cmd_str()} --hook"
 
     settings = {}
@@ -1352,41 +1361,55 @@ def cmd_install_hook(args: list[str]):
         try:
             settings = json.loads(settings_path.read_text(encoding="utf-8"))
         except Exception as e:
-            print(f"設定ファイルが読めません: {settings_path} ({e})", file=sys.stderr)
-            print("壊れたまま上書きすると危険なので、手動で直してから再実行してください", file=sys.stderr)
-            sys.exit(1)
+            raise RuntimeError(f"設定ファイルが読めません: {settings_path} ({e})") from e
 
     stop_hooks = settings.setdefault("hooks", {}).setdefault("Stop", [])
-    old_command = None
+    result = {"status": "added", "path": settings_path, "command": command, "backup": None, "old": None}
     for entry in stop_hooks:
         for hook in entry.get("hooks", []):
             cmd_str = hook.get("command", "")
             # ソース版（…speak.py --hook）と exe 版（…exe --hook）のどちらの登録も自分のものとして扱う
             if "--hook" in cmd_str and ("speak.py" in cmd_str or "voibo" in cmd_str.lower()):
                 if cmd_str == command:
-                    print(f"すでに設定済みです: {cmd_str}")
-                    return
+                    result["status"] = "already"
+                    return result
                 # 登録済みだがパスが違う＝フォルダの移動・改名後。現在の場所に付け替える
                 hook["command"] = command
-                old_command = cmd_str
+                result.update(status="updated", old=cmd_str)
                 break
-        if old_command:
+        if result["old"]:
             break
-    if old_command is None:
+    if result["status"] == "added":
         stop_hooks.append({"matcher": "", "hooks": [{"type": "command", "command": command}]})
 
     if settings_path.exists():
         backup = settings_path.with_name(settings_path.name + ".bak")
         shutil.copy2(settings_path, backup)
-        print(f"バックアップ: {backup}")
+        result["backup"] = backup
     settings_path.parent.mkdir(parents=True, exist_ok=True)
     settings_path.write_text(json.dumps(settings, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    if old_command is not None:
-        print(f"Stop フックのパスを現在の場所に更新しました: {settings_path}")
-        print(f"  旧: {old_command}")
+    return result
+
+
+def cmd_install_hook(args: list[str]):
+    """install-hook サブコマンド。本体は install_hook()、ここは結果の表示だけ。"""
+    try:
+        result = install_hook(Path(args[0]) if args else None)
+    except RuntimeError as e:
+        print(e, file=sys.stderr)
+        print("壊れたまま上書きすると危険なので、手動で直してから再実行してください", file=sys.stderr)
+        sys.exit(1)
+    if result["status"] == "already":
+        print(f"すでに設定済みです: {result['command']}")
+        return
+    if result["backup"]:
+        print(f"バックアップ: {result['backup']}")
+    if result["status"] == "updated":
+        print(f"Stop フックのパスを現在の場所に更新しました: {result['path']}")
+        print(f"  旧: {result['old']}")
     else:
-        print(f"Stop フックを追加しました: {settings_path}")
-    print(f"  command: {command}")
+        print(f"Stop フックを追加しました: {result['path']}")
+    print(f"  command: {result['command']}")
     print(f"次の Claude Code セッションから有効。読み上げを有効にするには: {self_cmd_str()} start")
 
 

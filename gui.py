@@ -636,9 +636,11 @@ class CastTab(ttk.Frame):
         # （文言のフルテキストはコピーで取れるので、見た目は1行に収める）
         share = ttk.Frame(self)
         share.grid(row=2, column=0, sticky="ew", pady=(12, 0))
+        # 連携の入口はこの共有文言ひとつ。フック導入などの配線は、ガイドファイルを
+        # 読んだ AI が自分で行う（GUI 側にボタンは置かない。二択の入口を作らない）
         ttk.Label(share, foreground=FG_DIM, font=("Yu Gothic UI", 8), text=(
-            "以下のテキストをローカル環境で動作する Claude Code や Codex で共有してください。"
-            "常時参照ファイルへの記載でも認識できるはずです。"
+            "以下のテキストを、ローカル環境で動作する AI（Claude Code や Codex）に伝えてください。"
+            "常時参照されるメモへの記載でも構いません。"
         )).pack(anchor="w")
         share_row = ttk.Frame(share)
         share_row.pack(fill="x", pady=(2, 0))
@@ -865,6 +867,9 @@ class CastTab(ttk.Frame):
         markers = speak.get_markers(cfg)
         port = cfg.get("servePort", speak.DEFAULT_SERVE_PORT)
         max_chars = cfg.get("maxChars", speak.MAX_CHARS)
+        overflow = cfg.get("overflowText", speak.OVERFLOW_TEXT)
+        overflow_note = (f"（超過分は「{overflow}」と読まれます）" if overflow
+                         else "（超過分は読まれません）")
 
         cast_lines = []
         for slot in CAST_SLOTS:
@@ -880,22 +885,6 @@ class CastTab(ttk.Frame):
             if markers["requireLabel"] else
             "- キャスト文字のない素の『…』も先頭キャスト（A）の声で読み上げられます\n"
         )
-        # Claude Code の Stop フックが入っているPCでは「返答に記法を書くだけ」が正しい使い方。
-        # これを先に言わないと、AI が読み上げ用の原稿を返答と別に作る（言っていないことを
-        # 声で言い出す）方向に流れる
-        try:
-            hook_installed = "--hook" in (Path.home() / ".claude" / "settings.json").read_text(encoding="utf-8")
-        except OSError:
-            hook_installed = False
-        hook_note = (
-            "あなたが Claude Code のセッションなら **CLI を呼ぶ必要はありません**。Stop フックが\n"
-            "設定済みのため、返答文の中に記法（下記）で書いたセリフが、応答の完了時に自動で\n"
-            "読み上げられます。読み上げは「返答の一部を声にする」仕組みです。返答とは別に\n"
-            "読み上げ用の原稿を作らないでください（書いた文とちがうことを声が言うのは望まれていません）。\n\n"
-            "フックの無い環境・スクリプト・他ソフトから使う場合の CLI（AI が自分で呼ぶときも、\n"
-            "読み上げさせる文は自分の返答に書いた文と同じにしてください）:\n\n"
-            if hook_installed else ""
-        )
         tag_note = ("- `<voice>テキスト</voice>` タグ記法も使えます（`<voice style=\"怒り\">` でスタイル指定）\n"
                     if markers["voiceTag"] else "")
         # exe（窓なし）はコンソールに文字を出せないので、結果を読む status は exe 版では案内しない
@@ -908,8 +897,20 @@ class CastTab(ttk.Frame):
             "このPCには「ぼいぼサポーター」（VOICEVOX 連携のCLI音声通知＆台本プレイヤー）と\n"
             "VOICEVOX がインストールされています。専用記法を含むテキストを渡すと VOICEVOX の声で\n"
             "読み上げられます。エンジンは必要時に自動起動するため事前準備は不要です。\n\n"
-            "## 読み上げさせ方\n\n"
-            f"{hook_note}"
+            # 経路分岐は環境の状態に依存させず常に全部書く（読み手が誰でも・いつ読んでも
+            # 同じ内容→AI の挙動が安定する）。「返答と別に原稿を作らない」の念押しは、
+            # 実際に AI が言っていないことを声で言い出した経緯があるので削らないこと
+            "## 読み上げさせ方（自分に当てはまる経路を使ってください）\n\n"
+            "**A. Claude Code のセッションで、Stop フック導入済み** — CLI を呼ぶ必要はありません。\n"
+            "返答文の中に記法（下記）で書いたセリフが、応答の完了時に自動で読み上げられます。\n"
+            "読み上げは「返答の一部を声にする」仕組みです。返答とは別に読み上げ用の原稿を\n"
+            "作らないでください（書いた文とちがうことを声が言うのは望まれていません）。\n"
+            "導入済みかは `~/.claude/settings.json` の hooks に `--hook` の登録があるかで分かります。\n\n"
+            f"**B. Claude Code のセッションで、フック未導入** — `{cmd} install-hook` を一度実行すると\n"
+            "A の自動読み上げが有効になります（既存設定はバックアップされ、二重登録もされないため\n"
+            "何度実行しても安全です。有効になるのは次のセッションから）。\n\n"
+            "**C. それ以外の AI・スクリプト・他ソフト** — 下記の CLI か HTTP を使ってください。\n"
+            "AI が自分で呼ぶときは、読み上げさせる文を自分の返答に書いた文と同じにしてください。\n\n"
             f'- `{cmd} --bg "A『こんにちは』"` … 読み上げ（CLI から呼ぶ場合はこれを推奨。\n'
             "  合成と再生は切り離したプロセスで行われ、コマンドはすぐ返ります）\n"
             f'- `{cmd} "A『こんにちは』"` … `--bg` なしは再生が終わるまで返りません\n'
@@ -927,7 +928,7 @@ class CastTab(ttk.Frame):
             "  （｜のない `漢字《かな》` は見た目の注記扱い＝《かな》を読み飛ばすだけで発音は変えません）\n"
             f"{label_note}{tag_note}"
             "- コードブロック・インラインコード内の記法は無視されます\n"
-            f"- 1セグメント約{max_chars}字まで（超過分は「以下省略」と読まれます）\n\n"
+            f"- 1セグメント約{max_chars}字まで{overflow_note}\n\n"
             "## 現在のキャスト（枠 = キャスト名（添字=スタイル））\n\n"
             + ("\n".join(cast_lines) or "（未設定）") + "\n"
         )
@@ -939,13 +940,13 @@ class CastTab(ttk.Frame):
         """連携用の共有文言を作り直す。1行は案内に徹して、詳細はガイドファイルに書く。"""
         try:
             guide = self._write_guide()
-            line = ("このPCには「ぼいぼサポーター」ならびに VOICEVOX がインストールされており、"
-                    "A『こんにちは』のような専用記法を用いることで音声読み上げを行うことができます。"
-                    f"詳しくは {guide} を読んでください。")
+            line = ("このPC環境には「ぼいぼサポーター」ならびに VOICEVOX がインストールされており、"
+                    "A『こんにちは』のような記法を用いることで音声読み上げを行うことができます。"
+                    f"詳しくは {guide} を参照してください。")
         except OSError:  # 書き込めない環境では従来のコマンド案内だけの1行に退化
             cmd = speak.self_cmd_str()
-            line = (f'このPCでは {cmd} --bg "A『こんにちは』" と実行すると VOICEVOX の声で'
-                    f"読み上げられます（キャスト一覧は {cmd} cast）")
+            line = (f'このPC環境では {cmd} --bg "A『こんにちは』" と実行すると VOICEVOX の声で'
+                    f"読み上げることができます（キャスト一覧は {cmd} cast）")
         self.share_text.configure(state="normal")
         self.share_text.delete("1.0", "end")
         self.share_text.insert("1.0", line)
@@ -1744,22 +1745,27 @@ class SettingsTab(ttk.Frame):
         self.step_vars = [tk.DoubleVar(value=s) for s in steps]
         self.char_vars = [tk.IntVar(value=c) for c in shown_chars]
         self.max_chars = tk.IntVar(value=cfg.get("maxChars", speak.MAX_CHARS))
+        self.overflow_text = tk.StringVar(value=cfg.get("overflowText", speak.OVERFLOW_TEXT))
         self.serve_port = tk.IntVar(value=cfg.get("servePort", speak.DEFAULT_SERVE_PORT))
         self.bare_ok = tk.BooleanVar(value=not markers["requireLabel"])
         self.script_auto = tk.BooleanVar(value=cfg.get("scriptAutoSpeed", False))
         self.voice_tag = tk.BooleanVar(value=markers["voiceTag"])
         self.auto_start = tk.BooleanVar(value=cfg.get("autoStart", True))
 
-        def note(parent, text):
-            ttk.Label(parent, text=text, foreground=FG_DIM,
-                      font=("Yu Gothic UI", 8)).pack(anchor="w", padx=8, pady=(2, 6))
+        def note(parent, text, pady=(2, 6)):
+            ttk.Label(parent, text=text, foreground=FG_DIM, wraplength=560, justify="left",
+                      font=("Yu Gothic UI", 8)).pack(anchor="w", padx=8, pady=pady)
 
         # --- 読み上げ速度設定: 速度1〜5。速度2=通常、速度3〜5は文字数に応じた自動早口も担う ---
+        # 仕組みの説明は冒頭の1文に集約し、各行の注釈は最小限にする（画面では内輪の用語
+        # 「通常」「ゆっくり枠」を出さず、挙動をです・ます調で語る）
         speed_frame = ttk.LabelFrame(self, text="読み上げ速度設定")
         speed_frame.pack(fill="x")
+        note(speed_frame, "読み上げの速さは5段階で設定できます。ふだんの読み上げは速度2で、"
+                          "長い文は文字数に応じて速度3〜5に自動で切り替わります。", pady=(6, 2))
         ladder = ttk.Frame(speed_frame)
-        ladder.pack(anchor="w", padx=8, pady=(8, 0))
-        annotations = ("ゆっくり枠（A1『…』の記法で使う）", "← 通常")
+        ladder.pack(anchor="w", padx=8, pady=(4, 0))
+        annotations = ("A1『…』のように数字で指名したときに使われます", "ふだんの読み上げはこの速さです")
         for i in range(5):
             ttk.Label(ladder, text=f"速度{i + 1}", width=6).grid(row=i, column=0, sticky="w", pady=1)
             tk.Spinbox(ladder, textvariable=self.step_vars[i], from_=0.5, to=2.0,
@@ -1768,27 +1774,27 @@ class SettingsTab(ttk.Frame):
             if i >= 2:
                 tk.Spinbox(ladder, textvariable=self.char_vars[i - 2], from_=10,
                            to=2000, increment=10, width=6).grid(row=i, column=3)
-                ttk.Label(ladder, text="字以上の通知は自動でこの速さ"
-                          ).grid(row=i, column=4, sticky="w", padx=4)
+                ttk.Label(ladder, text="字以上で切り替え").grid(row=i, column=4, sticky="w", padx=4)
             else:
                 ttk.Label(ladder, text=annotations[i], foreground=FG_DIM
                           ).grid(row=i, column=3, columnspan=2, sticky="w", padx=4)
-        ttk.Checkbutton(speed_frame, text="台本再生でも読み上げ速度の自動調整を使う（台本タブ・play・paste）",
+        ttk.Checkbutton(speed_frame, text="台本の再生でも文字数による自動調整を使う（台本タブ・play・paste）",
                         variable=self.script_auto, command=self._schedule_save
                         ).pack(anchor="w", padx=8, pady=(6, 0))
-        note(speed_frame, "数字の記法で速度を指名できます（A1『ゆっくり』、Ad1『ささやきでゆっくり』＝その"
-                          "セリフは固定速度）。台本再生（play/paste）と通知のふだんの速さは通常＝速度2")
+        note(speed_frame, "A1『こんにちは』のように数字を添えたセリフは、指名した速度で固定されます"
+                          "（文字数による自動調整より優先されます）。")
 
         # --- 読み上げる記法: 実例をそのまま見せる（名前だけのチェックボックスにしない） ---
         notation = ttk.LabelFrame(self, text="読み上げる記法")
         notation.pack(fill="x", pady=(12, 0))
-        ttk.Label(notation, text="A『こんにちは』 … キャスト記法はいつでも読み上げます"
+        ttk.Label(notation, text="A『こんにちは』 … キャスト記法は常に読み上げます"
                   ).pack(anchor="w", padx=8, pady=(8, 2))
         ttk.Checkbutton(notation, text="ラベルなしの 『こんにちは』 も読み上げる（キャストAの声で）",
                         variable=self.bare_ok, command=self._schedule_save).pack(anchor="w", padx=8)
         ttk.Checkbutton(notation, text="<voice>こんにちは</voice> のタグ記法も読み上げる",
                         variable=self.voice_tag, command=self._schedule_save).pack(anchor="w", padx=8)
-        note(notation, '<voice style="怒り">…</voice> でスタイル指定。コードブロック内の記法はいつも読みません')
+        note(notation, '<voice style="怒り">…</voice> のようにスタイルも指定できます。'
+                       "コードブロック内の記法は常に読み上げません。")
 
         # --- こまかい設定 ---
         adv = ttk.LabelFrame(self, text="こまかい設定")
@@ -1799,18 +1805,25 @@ class SettingsTab(ttk.Frame):
         tk.Spinbox(row1, textvariable=self.max_chars, from_=100, to=2000,
                    increment=50, width=7).pack(side="left", padx=(8, 4))
         ttk.Label(row1, text="文字").pack(side="left")
-        note(adv, "長くすると音が出るまでの待ちが延びます（目安: 500字で約13秒）。超過分は「以下省略」と読みます")
+        note(adv, "上限を長くすると、音が出はじめるまでの待ち時間が延びます（目安: 500字で約13秒）。")
+        row_of = ttk.Frame(adv)
+        row_of.pack(anchor="w", padx=8)
+        ttk.Label(row_of, text="上限を超えたときに最後に読む言葉").pack(side="left")
+        ttk.Entry(row_of, textvariable=self.overflow_text, width=14).pack(side="left", padx=(8, 0))
+        note(adv, "超過したぶんは読まれず、代わりにこの言葉を読みます。空欄にすると、何も言わずに打ち切ります。")
         row2 = ttk.Frame(adv)
         row2.pack(anchor="w", padx=8)
         ttk.Label(row2, text="serve のポート番号").pack(side="left")
         tk.Spinbox(row2, textvariable=self.serve_port, from_=1024, to=65535,
                    width=7).pack(side="left", padx=(8, 0))
-        ttk.Checkbutton(adv, text="エンジンが止まっていたら自動起動する",
+        note(adv, "HTTP 経由で読み上げを受け付けるとき（serve 機能）の待ち受けポートです。")
+        ttk.Checkbutton(adv, text="VOICEVOX エンジンが止まっていたら自動で起動する",
                         variable=self.auto_start, command=self._schedule_save
-                        ).pack(anchor="w", padx=8, pady=(8, 8))
+                        ).pack(anchor="w", padx=8, pady=(2, 8))
 
         # 数値欄はキー入力・スピン操作のどちらでも変わるので、変数のトレースで拾って自動保存
-        for var in (self.max_chars, self.serve_port, *self.step_vars, *self.char_vars):
+        for var in (self.max_chars, self.overflow_text, self.serve_port,
+                    *self.step_vars, *self.char_vars):
             var.trace_add("write", self._schedule_save)
         self._loading = False
 
@@ -1845,6 +1858,7 @@ class SettingsTab(ttk.Frame):
         max_chars = grab(self.max_chars, 100, 2000, int)
         if max_chars is not None:
             cfg["maxChars"] = max_chars
+        cfg["overflowText"] = self.overflow_text.get().strip()
         port = grab(self.serve_port, 1024, 65535, int)
         if port is not None:
             cfg["servePort"] = port
@@ -1904,10 +1918,10 @@ def build_gate(root: tk.Tk):
     frame.pack(fill="both", expand=True)
     ttk.Label(frame, text="VOICEVOX が見つかりません", font=("Yu Gothic UI", 14, "bold")).pack(anchor="w")
     ttk.Label(frame, wraplength=420, justify="left", text=(
-        "このツールは VOICEVOX（本家）がインストールされていることが大前提です。\n"
+        "このツールを使うには VOICEVOX（本家）が必要です。\n"
         "未インストールの場合は、公式サイトからインストールしてください（無料）。\n\n"
         "インストール済みなのにこの画面になる場合は、インストール先が標準と違う可能性があります。"
-        f"コマンドで  {speak.self_cmd_str()} config enginePath <run.exeの場所>  を設定してください。"
+        "「インストール先を指定」から、VOICEVOX のエンジン（run.exe）の場所を教えてください。"
     )).pack(anchor="w", pady=12)
     buttons = ttk.Frame(frame)
     buttons.pack(anchor="w")
@@ -1919,7 +1933,19 @@ def build_gate(root: tk.Tk):
             frame.destroy()
             build_main(root)
 
-    ttk.Button(buttons, text="再チェック", command=retry).pack(side="left", padx=8)
+    def choose_engine():
+        path = filedialog.askopenfilename(
+            parent=root, title="VOICEVOX のエンジン（run.exe）を選んでください",
+            filetypes=[("VOICEVOX エンジン", "*.exe")])
+        if not path:
+            return
+        cfg = speak.load_config()
+        cfg["enginePath"] = path
+        speak.save_config(cfg)
+        retry()
+
+    ttk.Button(buttons, text="インストール先を指定", command=choose_engine).pack(side="left", padx=8)
+    ttk.Button(buttons, text="再チェック", command=retry).pack(side="left")
 
 
 def build_main(root: tk.Tk):
