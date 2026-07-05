@@ -708,9 +708,14 @@ def ensure_engine():
         print("VOICEVOX engine not found", file=sys.stderr)
         return False
 
+    host = vv_host()
+    try:
+        port = host.rsplit(":", 1)[1].rstrip("/")
+    except (IndexError, ValueError):
+        port = "50021"
     print(f"Starting VOICEVOX engine: {engine}")
     subprocess.Popen(
-        [str(engine), "--host", "127.0.0.1", "--port", "50021"],
+        [str(engine), "--host", "127.0.0.1", "--port", port],
         **_detached_popen_kwargs(),
     )
 
@@ -853,71 +858,72 @@ def cmd_config(args: list[str]):
 
     key = args[0]
     cfg = load_config()
-    if key == "speaker":
-        cfg["speaker"] = int(args[1])
-    elif key == "speed":
-        # 「通常の話速」= 速度2 の同義語（旧来のキー。speedSteps があればそちらも同期）
-        val = clamp_speed(float(args[1]))
-        cfg["speed"] = val
-        if isinstance(cfg.get("speedSteps"), list) and len(cfg["speedSteps"]) == 5:
-            cfg["speedSteps"][1] = val
-    elif key == "speedSteps":
-        vals = args[1:]
-        if len(vals) != 5:
-            print("Usage: speak.py config speedSteps <速度1 速度2 速度3 速度4 速度5>（速度2=通常。例: 0.8 1.3 1.4 1.55 1.7）")
-            return
-        cfg["speedSteps"] = [clamp_speed(float(v)) for v in vals]
-        cfg["speed"] = cfg["speedSteps"][1]
-    elif key == "stepChars":
-        if args[1].lower() in ("off", "none"):
-            cfg["stepChars"] = []
+    try:
+        if key == "speaker":
+            cfg["speaker"] = int(args[1])
+        elif key == "speed":
+            val = clamp_speed(float(args[1]))
+            cfg["speed"] = val
+            if isinstance(cfg.get("speedSteps"), list) and len(cfg["speedSteps"]) == 5:
+                cfg["speedSteps"][1] = val
+        elif key == "speedSteps":
+            vals = args[1:]
+            if len(vals) != 5:
+                print("Usage: speak.py config speedSteps <速度1 速度2 速度3 速度4 速度5>（速度2=通常。例: 0.8 1.3 1.4 1.55 1.7）")
+                return
+            cfg["speedSteps"] = [clamp_speed(float(v)) for v in vals]
+            cfg["speed"] = cfg["speedSteps"][1]
+        elif key == "stepChars":
+            if args[1].lower() in ("off", "none"):
+                cfg["stepChars"] = []
+            else:
+                cfg["stepChars"] = sorted(max(1, int(v)) for v in args[1:4])
+        elif key == "maxChars":
+            cfg["maxChars"] = max(100, min(2000, int(args[1])))
+        elif key == "host":
+            cfg["host"] = args[1]
+        elif key == "overflowText":
+            cfg["overflowText"] = " ".join(args[1:])
+        elif key == "enginePath":
+            cfg["enginePath"] = args[1]
+        elif key == "prePhonemeLength":
+            cfg["prePhonemeLength"] = max(0.0, min(2.0, float(args[1])))
+        elif key == "intonationScale":
+            cfg["intonationScale"] = max(0.0, min(2.0, float(args[1])))
+        elif key == "pauseLengthScale":
+            cfg["pauseLengthScale"] = max(0.0, min(2.0, float(args[1])))
+        elif key == "favorites":
+            cfg["favorites"] = [int(v) for v in args[1:]]
+        elif key == "autoStart":
+            cfg["autoStart"] = args[1].lower() in ("on", "true", "1")
+        elif key == "servePort":
+            port = int(args[1])
+            if not 1024 <= port <= 65535:
+                print("servePort は 1024〜65535 の範囲で指定してください")
+                return
+            cfg["servePort"] = port
+        elif key == "voiceTag":
+            cfg.setdefault("markers", {})["voiceTag"] = args[1].lower() in ("on", "true", "1")
+        elif key == "lineMarker":
+            value = None if args[1].lower() in ("off", "none") else args[1]
+            cfg.setdefault("markers", {})["linePrefix"] = value
+        elif key == "brackets":
+            if args[1].lower() in ("off", "none"):
+                cfg.setdefault("markers", {})["brackets"] = None
+            elif len(args) >= 3:
+                cfg.setdefault("markers", {})["brackets"] = [args[1], args[2]]
+            elif len(args[1]) >= 2:
+                cfg.setdefault("markers", {})["brackets"] = [args[1][0], args[1][1:]]
+            else:
+                print("Usage: speak.py config brackets <開き> <閉じ> | off")
+                return
+        elif key == "requireLabel":
+            cfg.setdefault("markers", {})["requireLabel"] = args[1].lower() in ("on", "true", "1")
         else:
-            cfg["stepChars"] = sorted(max(1, int(v)) for v in args[1:4])
-    elif key == "maxChars":
-        # 長くすると音が出るまでの待ちが延びる（500字で合成13秒前後・エンジンの実質上限は2000字弱）
-        cfg["maxChars"] = max(100, min(2000, int(args[1])))
-    elif key == "host":
-        cfg["host"] = args[1]
-    elif key == "overflowText":
-        # 値なしで実行すると空文字（=超過分を黙って打ち切る）になる
-        cfg["overflowText"] = " ".join(args[1:])
-    elif key == "enginePath":
-        cfg["enginePath"] = args[1]
-    elif key == "prePhonemeLength":
-        cfg["prePhonemeLength"] = max(0.0, min(2.0, float(args[1])))
-    elif key == "intonationScale":
-        cfg["intonationScale"] = max(0.0, min(2.0, float(args[1])))
-    elif key == "pauseLengthScale":
-        cfg["pauseLengthScale"] = max(0.0, min(2.0, float(args[1])))
-    elif key == "favorites":
-        cfg["favorites"] = [int(v) for v in args[1:]]
-    elif key == "autoStart":
-        cfg["autoStart"] = args[1].lower() in ("on", "true", "1")
-    elif key == "servePort":
-        port = int(args[1])
-        if not 1024 <= port <= 65535:
-            print("servePort は 1024〜65535 の範囲で指定してください")
+            print(f"Unknown key: {key} (speaker, speed, speedSteps, stepChars, maxChars, overflowText, host, enginePath, favorites, autoStart, servePort, voiceTag, lineMarker, brackets, requireLabel)")
             return
-        cfg["servePort"] = port
-    elif key == "voiceTag":
-        cfg.setdefault("markers", {})["voiceTag"] = args[1].lower() in ("on", "true", "1")
-    elif key == "lineMarker":
-        value = None if args[1].lower() in ("off", "none") else args[1]
-        cfg.setdefault("markers", {})["linePrefix"] = value
-    elif key == "brackets":
-        if args[1].lower() in ("off", "none"):
-            cfg.setdefault("markers", {})["brackets"] = None
-        elif len(args) >= 3:
-            cfg.setdefault("markers", {})["brackets"] = [args[1], args[2]]
-        elif len(args[1]) >= 2:
-            cfg.setdefault("markers", {})["brackets"] = [args[1][0], args[1][1:]]
-        else:
-            print("Usage: speak.py config brackets <開き> <閉じ> | off")
-            return
-    elif key == "requireLabel":
-        cfg.setdefault("markers", {})["requireLabel"] = args[1].lower() in ("on", "true", "1")
-    else:
-        print(f"Unknown key: {key} (speaker, speed, speedSteps, stepChars, maxChars, overflowText, host, enginePath, favorites, autoStart, servePort, voiceTag, lineMarker, brackets, requireLabel)")
+    except ValueError:
+        print(f"config {key}: 数値を指定してください")
         return
     save_config(cfg)
     if key == "favorites":

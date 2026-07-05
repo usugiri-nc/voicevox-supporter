@@ -1097,6 +1097,194 @@ class DropMenu(tk.Frame):
         self.destroy()
 
 
+class StylePicker(tk.Frame):
+    """台本タブ用: キャストのスタイルを選ぶモーダル。CharacterPicker と同じ
+    「スナップショット＋ベール＋中央パネル」の流儀。左にスタイル一覧、右に立ち絵。"""
+
+    VEIL_ALPHAS = (60, 115, 170)
+    SETTLE_RELY = (0.53, 0.515, 0.5)
+    STYLE_ICON_SIZE = 48
+
+    def __init__(self, script_tab: "ScriptTab", slot: str, sp: dict):
+        top = script_tab.winfo_toplevel()
+        self._snapshot = capture_window(top)
+        super().__init__(top, background=DARK)
+        self.script_tab = script_tab
+        self.slot = slot
+        self.sp = sp
+        self._win_w, self._win_h = top.winfo_width(), top.winfo_height()
+        self.place(x=0, y=0, relwidth=1.0, relheight=1.0)
+        self.lift()
+
+        self.veil_canvas = tk.Canvas(self, background=DARK, highlightthickness=0)
+        self.veil_canvas.pack(fill="both", expand=True)
+        if self._snapshot is not None:
+            self.veil_canvas.create_image(0, 0, image=self._snapshot, anchor="nw")
+        self._veil_img: tk.PhotoImage | None = None
+
+        panel = tk.Frame(self, background=DARK, highlightthickness=1,
+                         highlightbackground="#555555")
+        self._panel = panel
+
+        header = tk.Frame(panel, background=DARK)
+        header.pack(fill="x", pady=(10, 4))
+        cast_cfg = speak.load_config().get("cast", {}).get(slot, {})
+        title_text = f"スタイル選択（{slot} = {cast_cfg.get('name', sp['name'])}）"
+        title = tk.Label(header, text=title_text, foreground="#eeeeee",
+                         background=DARK, font=("Yu Gothic UI", 11, "bold"))
+        title.pack(side="left", padx=14)
+
+        body = tk.Frame(panel, background=DARK)
+        body.pack(padx=14, pady=(4, 10))
+
+        # 左: スタイル一覧
+        style_list = tk.Frame(body, background=DARK)
+        style_list.pack(side="left", anchor="n")
+
+        uuid = sp["speaker_uuid"]
+        info = get_speaker_info(uuid)
+        style_infos = info.get("style_infos", [])
+        styles = sp.get("styles", [])
+        current_suffix = script_tab._active_style.get(slot, "")
+
+        self._style_icons: list[tk.PhotoImage] = []
+        self._rows: list[tk.Frame] = []
+
+        for i, st in enumerate(styles):
+            suffix = chr(ord("a") + i)
+            is_current = suffix == current_suffix or (current_suffix == "" and i == 0)
+
+            row = tk.Frame(style_list, background=DARK, cursor="hand2", padx=6, pady=4)
+            row.pack(fill="x", pady=1)
+            self._rows.append(row)
+
+            icon_img = None
+            if i < len(style_infos):
+                try:
+                    data = fetch_image(style_infos[i]["icon"])
+                    raw = tk.PhotoImage(data=data)
+                    icon_img = raw.subsample(max(1, raw.width() // self.STYLE_ICON_SIZE))
+                    self._style_icons.append(icon_img)
+                except Exception:
+                    pass
+            if icon_img is None:
+                icon_img = tk.PhotoImage(width=self.STYLE_ICON_SIZE,
+                                         height=self.STYLE_ICON_SIZE)
+                self._style_icons.append(icon_img)
+
+            icon_lbl = tk.Label(row, image=icon_img, background=DARK, borderwidth=0)
+            icon_lbl.pack(side="left", padx=(0, 8))
+
+            suffix_display = f"{slot}{suffix}" if i > 0 else f"{slot}"
+            label_text = f"{st['name']}　（{suffix_display}『…』）"
+            text_lbl = tk.Label(row, text=label_text, background=DARK, foreground=FG,
+                                font=("Yu Gothic UI", 10), anchor="w")
+            text_lbl.pack(side="left", fill="x")
+
+            if is_current:
+                row.configure(background=BG_RAISED)
+                for child in row.winfo_children():
+                    child.configure(background=BG_RAISED)
+
+            for widget in (row, icon_lbl, text_lbl):
+                widget.bind("<Enter>", lambda _e, r=row, idx=i: self._hover_row(r, idx))
+                widget.bind("<Leave>", lambda _e, r=row, idx=i: self._unhover_row(r, idx))
+                widget.bind("<Button-1>", lambda _e, idx=i: self._choose(idx))
+
+        # 右: 立ち絵プレビュー
+        preview = tk.Frame(body, background=DARK)
+        preview.pack(side="left", anchor="n", padx=(20, 0))
+        self.preview_canvas = tk.Canvas(preview, width=PREVIEW_W, height=PREVIEW_H,
+                                        background=DARK, highlightthickness=0)
+        self.preview_canvas.pack()
+        self._show_portrait()
+
+        for w in (self.veil_canvas, panel, header, title, body,
+                  style_list, preview, self.preview_canvas):
+            w.bind("<Button-1>", lambda _e: self.close())
+        self._esc_bind = top.bind("<Escape>", lambda _e: self.close())
+        self._fade()
+
+    def _show_portrait(self):
+        uuid = self.sp["speaker_uuid"]
+        img = None
+        if uuid in CharacterPicker.portrait_cache:
+            img = CharacterPicker.portrait_cache[uuid]
+        else:
+            data = PORTRAIT_DATA.get(uuid)
+            if data is None:
+                try:
+                    info = get_speaker_info(uuid)
+                    if info.get("portrait"):
+                        data = fetch_image(info["portrait"])
+                        PORTRAIT_DATA[uuid] = data
+                except Exception:
+                    pass
+            if data:
+                raw = trim_transparent(tk.PhotoImage(data=data), uuid)
+                cw, ch = raw.width(), raw.height()
+                z, m = max(
+                    (zm for zm in PORTRAIT_SCALES
+                     if cw * zm[0] <= PREVIEW_W * zm[1] and ch * zm[0] <= PREVIEW_H * zm[1]),
+                    key=lambda zm: zm[0] / zm[1], default=(1, 6),
+                )
+                if z > 1:
+                    raw = raw.zoom(z, z)
+                if m > 1:
+                    raw = raw.subsample(m, m)
+                CharacterPicker.portrait_cache[uuid] = raw
+                img = raw
+        if img is not None:
+            self.preview_canvas.create_image(PREVIEW_W // 2, PREVIEW_H,
+                                             image=img, anchor="s")
+            self._portrait_ref = img
+        draw_vertical_name(self.preview_canvas, PREVIEW_W - 10, 8, self.sp["name"], 16)
+
+    def _hover_row(self, row: tk.Frame, idx: int):
+        row.configure(background="#3a3a3a")
+        for child in row.winfo_children():
+            child.configure(background="#3a3a3a")
+
+    def _unhover_row(self, row: tk.Frame, idx: int):
+        current_suffix = self.script_tab._active_style.get(self.slot, "")
+        is_current = (chr(ord("a") + idx) == current_suffix
+                      or (current_suffix == "" and idx == 0))
+        bg = BG_RAISED if is_current else DARK
+        row.configure(background=bg)
+        for child in row.winfo_children():
+            child.configure(background=bg)
+
+    def _choose(self, idx: int):
+        suffix = chr(ord("a") + idx) if idx > 0 else ""
+        self.script_tab._set_active_style(self.slot, suffix)
+        self.close()
+
+    def _fade(self, step: int = 0):
+        if not self.winfo_exists():
+            return
+        if step < len(self.VEIL_ALPHAS):
+            png = shade_png(self._win_w, self._win_h, self.VEIL_ALPHAS[step])
+            self._veil_img = tk.PhotoImage(data=base64.b64encode(png).decode("ascii"))
+            self.veil_canvas.delete("veil")
+            self.veil_canvas.create_image(0, 0, image=self._veil_img, anchor="nw", tags="veil")
+            self.after(35, self._fade, step + 1)
+        else:
+            self._settle()
+
+    def _settle(self, step: int = 0):
+        if not self.winfo_exists():
+            return
+        self._panel.place(relx=0.5, rely=self.SETTLE_RELY[step], anchor="center")
+        if step + 1 < len(self.SETTLE_RELY):
+            self.after(30, self._settle, step + 1)
+
+    def close(self):
+        top = self.winfo_toplevel()
+        top.unbind("<Escape>", self._esc_bind)
+        self.script_tab._style_picker = None
+        self.destroy()
+
+
 class ScriptTab(ttk.Frame):
     """台本タブ。左端=登録キャストの正方形サムネイル縦列（ドラッグ元）、右=台本の入力欄。
     行ごとに記法を解析してキャスト色で染め、サムネイルを行へドロップすると
@@ -1170,6 +1358,9 @@ class ScriptTab(ttk.Frame):
         self._parse_timer: str | None = None
         self._line_info: list[tuple[str, str | None, int]] = []
         self._letter_font = tkfont.Font(family="Yu Mincho", size=11, weight="bold")
+        self._active_style: dict[str, str] = {}  # slot -> スタイル添字（""=先頭スタイル）
+        self._style_picker: StylePicker | None = None
+        self._hover_slot: str | None = None
 
         # --- 上段ツールバー: 左=音が出る系（再生・WAV）、右=テキストの入出力系 ---
         bar = ttk.Frame(self)
@@ -1192,12 +1383,13 @@ class ScriptTab(ttk.Frame):
             sample_btn, [(t, lambda t=t: self._insert_sample(t)) for t in self.TEST_SCRIPTS]))
         sample_btn.pack(side="left", padx=(6, 0))
         # キャスト割り振り: 台本がただのテキストだからできる一括の配役（本家のセル単位編集との差別化）
-        assign_btn = ttk.Button(bar, text="キャスト割り振り ▾")
-        assign_btn.configure(command=lambda: self._drop_menu(assign_btn, [
-            ("順に割り振り", lambda: self.auto_assign(shuffle=False)),
-            ("ランダムに割り振り", lambda: self.auto_assign(shuffle=True)),
+        self._assign_btn = ttk.Button(bar, text="キャスト割り振り ▾")
+        self._assign_btn.configure(command=lambda: self._drop_menu(self._assign_btn, [
+            ("未設定の行だけ割り振り", lambda: self.auto_assign(shuffle=False, unset_only=True)),
+            ("全行を順に割り振り", lambda: self.auto_assign(shuffle=False)),
+            ("全行をランダムに割り振り", lambda: self.auto_assign(shuffle=True)),
         ]))
-        assign_btn.pack(side="left", padx=(6, 0))
+        self._assign_btn.pack(side="left", padx=(6, 0))
         # テキストの入出力は右側に一族でまとめる（読み込み→保存→本家書き出し。どれも txt の話）
         self._vvox_btn = ttk.Button(bar, text="本家VOICEVOX用に書き出し",
                                     command=self.export_voicevox)
@@ -1247,6 +1439,7 @@ class ScriptTab(ttk.Frame):
         self.text.tag_configure("defaultread", foreground=FG)        # 記法なし台本の全行読み
         self.text.tag_configure("silent", foreground=FG_DIM)         # 読まれない行（ト書き・地の文）
         self.text.tag_configure("warn", foreground="#e07a7a", underline=True)  # 記法ミスの疑い
+        self.text.tag_configure("hoverhighlight", background="#2a2a3d")  # 左アイコン hover 中の対応行
         self.text.tag_configure("nowline", background="#54430f")     # 発話中の行
         self.text.tag_configure("droptarget", background="#3d3520")  # ドラッグ中のドロップ先
         # ルビの可視化（キャスト色より後に作る＝前景色で勝つ）: 下線=｜指定の振り先（発音に効く）、
@@ -1391,8 +1584,15 @@ class ScriptTab(ttk.Frame):
         else:
             # 空っぽの画面だけは最初の一歩を言葉で示す（初見の人がここで止まらないように）
             note = ("台本を貼り付けるか、「サンプル台本」から始められます。"
-                    "左のキャストを行へドラッグすると、その行の配役が決まります")
+                    "左のキャストを行へドラッグすると配役が決まります（クリックでスタイル選択）")
         self._note.configure(text=note)
+        # 未割り振りの行があるときだけボタンを目立たせる
+        has_cast = any(kind == "cast" for kind, _s, _c in self._line_info)
+        unset = any(kind in ("silent", "default") for kind, _s, _c in self._line_info)
+        if unset and has_cast and content.strip():
+            self._assign_btn.configure(style="Nudge.TButton")
+        else:
+            self._assign_btn.configure(style="TButton")
         try:
             self.DRAFT_PATH.write_text(content, encoding="utf-8")
         except OSError:
@@ -1417,17 +1617,114 @@ class ScriptTab(ttk.Frame):
             cell = tk.Canvas(self._strip, width=THUMB, height=THUMB, background=BG,
                              highlightthickness=2, highlightbackground="#3a3a3a",
                              cursor="hand2")
-            cell.create_image(THUMB // 2 + 2, THUMB // 2 + 2, image=img)
+            # アクティブスタイルがあればそのスタイルのアイコンを使う
+            style_idx = 0
+            suffix = self._active_style.get(slot, "")
+            if suffix and sp:
+                style_idx = max(0, ord(suffix) - ord("a"))
+                styled_img = self._style_thumb(sp, style_idx)
+                if styled_img:
+                    img = styled_img
+            cell.create_image(THUMB // 2 + 2, THUMB // 2 + 2, image=img, tags="icon")
             cell.image = img
-            # 枠文字は行色と同じ色で（カード左下と同じ明朝・影付きの流儀）
             for ox, oy, fill in ((1, 1, "#101010"), (0, 0, CAST_COLORS.get(slot, "#f2f2f2"))):
                 cell.create_text(6 + ox, THUMB + oy, text=slot, anchor="sw",
-                                 font=self._letter_font, fill=fill)
+                                 font=self._letter_font, fill=fill, tags="letter")
+            self._draw_style_tag(cell, slot, cast)
             cell.pack(pady=(0, 6))
             cell.bind("<ButtonPress-1>", lambda e, s=slot: self._press(e, s))
             cell.bind("<B1-Motion>", self._motion)
             cell.bind("<ButtonRelease-1>", self._release)
+            cell.bind("<Enter>", lambda _e, s=slot: self._hover_strip(s))
+            cell.bind("<Leave>", lambda _e: self._unhover_strip())
             self._strip_cells[slot] = cell
+
+    def _draw_style_tag(self, cell: tk.Canvas, slot: str, cast: dict):
+        """アイコン右上にスタイル名の小タグを描く。アクティブスタイルがなければ何も出さない。"""
+        cell.delete("styletag")
+        suffix = self._active_style.get(slot, "")
+        if not suffix:
+            return
+        entry = cast.get(slot, {})
+        styles = entry.get("styles", {})
+        idx = ord(suffix) - ord("a")
+        names = list(styles.keys())
+        if not (0 <= idx < len(names)):
+            return
+        name = names[idx]
+        tag_font = ("Yu Gothic UI", 7)
+        # 右上に白背景＋濃文字のタグ（highlightthickness=2 のぶん内側にずれる）
+        tx, ty = THUMB - 1, 3
+        tid = cell.create_text(tx, ty, text=name, anchor="ne", font=tag_font,
+                               fill="#1f1f1f", tags="styletag")
+        bbox = cell.bbox(tid)
+        if bbox:
+            pad = 2
+            cell.create_rectangle(bbox[0] - pad, bbox[1] - 1, bbox[2] + pad, bbox[3],
+                                  fill="#e6e6e6", outline="", tags="styletag")
+            cell.tag_raise(tid)
+
+    def _style_thumb(self, sp: dict, style_idx: int) -> tk.PhotoImage | None:
+        """スタイル固有のアイコンを取得する。"""
+        uuid = sp["speaker_uuid"]
+        try:
+            info = get_speaker_info(uuid)
+            style_infos = info.get("style_infos", [])
+            if style_idx < len(style_infos):
+                data = fetch_image(style_infos[style_idx]["icon"])
+                icon = tk.PhotoImage(data=data)
+                return icon.subsample(max(1, icon.width() // THUMB))
+        except Exception:
+            pass
+        return None
+
+    def _set_active_style(self, slot: str, suffix: str):
+        """スタイルのアクティブ状態を切り替え、アイコンとタグを再描画する。"""
+        self._active_style[slot] = suffix
+        cast = speak.load_config().get("cast", {})
+        cell = self._strip_cells.get(slot)
+        if not (cell and cell.winfo_exists()):
+            return
+        # アイコンをスタイル固有のものに差し替え
+        entry = cast.get(slot, {})
+        sp = self.by_name.get(entry.get("name", ""))
+        if sp:
+            style_idx = max(0, ord(suffix) - ord("a")) if suffix else 0
+            img = self._style_thumb(sp, style_idx)
+            if img is None:
+                img = CharacterPicker._thumb(sp)
+            cell.delete("icon")
+            cell.create_image(THUMB // 2 + 2, THUMB // 2 + 2, image=img, tags="icon")
+            cell.image = img
+            # 枠文字を最前面に戻す
+            cell.tag_raise("letter")
+        self._draw_style_tag(cell, slot, cast)
+
+    def _hover_strip(self, slot: str):
+        """左アイコンの hover で対応行をハイライトする。"""
+        if self._hover_slot == slot:
+            return
+        self._hover_slot = slot
+        self.text.tag_remove("hoverhighlight", "1.0", "end")
+        for i, (kind, line_slot, _cnt) in enumerate(self._line_info, 1):
+            if kind == "cast" and line_slot == slot:
+                self.text.tag_add("hoverhighlight", f"{i}.0", f"{i}.end")
+
+    def _unhover_strip(self):
+        """hover 解除。"""
+        self._hover_slot = None
+        self.text.tag_remove("hoverhighlight", "1.0", "end")
+
+    def _open_style_picker(self, slot: str):
+        """クリックでスタイル選択モーダルを開く。"""
+        if self._style_picker is not None and self._style_picker.winfo_exists():
+            self._style_picker.close()
+        cast = speak.load_config().get("cast", {})
+        entry = cast.get(slot, {})
+        sp = self.by_name.get(entry.get("name", ""))
+        if sp is None or len(sp.get("styles", [])) < 2:
+            return  # スタイルが1つしかない場合は開かない
+        self._style_picker = StylePicker(self, slot, sp)
 
     def _press(self, event, slot: str):
         self._drag = {"slot": slot, "x": event.x_root, "y": event.y_root,
@@ -1457,6 +1754,7 @@ class ScriptTab(ttk.Frame):
         if drag["ghost"] is not None:
             drag["ghost"].destroy()
         if not drag["moved"]:
+            self._open_style_picker(drag["slot"])
             return
         line = self._line_at_pointer(event)
         if line is not None:
@@ -1482,45 +1780,55 @@ class ScriptTab(ttk.Frame):
         return int(self.text.index(f"@{x},{y}").split(".")[0])
 
     @staticmethod
-    def _relabel(body: str, slot: str, ob: str, cb: str) -> str:
-        """行の中身にキャスト記法を書き込む（D&D と自動割り振りの共通部）。"""
+    def _relabel(body: str, slot: str, ob: str, cb: str, suffix: str = "") -> str:
+        """行の中身にキャスト記法を書き込む（D&D と自動割り振りの共通部）。
+        suffix はスタイル添字（例: "d"）。既にラベルがある行は添字を付け替える。"""
+        label = slot + suffix
         if re.match(r"[A-Z][a-z]?[1-5]?" + re.escape(ob), body):
-            return slot + body[1:]        # ラベルの付け替え（スタイル・速度の添字は残す）
+            # 既存ラベルを丸ごと差し替え（スロット＋スタイル添字。速度数字は残す）
+            m = re.match(r"[A-Z][a-z]?([1-5]?" + re.escape(ob) + r")", body)
+            return label + m.group(1) + body[m.end():]
         if body.startswith(ob):
-            return slot + body            # 素の括弧セリフにラベルを付ける
-        return f"{slot}{ob}{body}{cb}"    # 散文の行はまるごとセリフ化
+            return label + body
+        return f"{label}{ob}{body}{cb}"
 
-    def _rewrite_line(self, line_no: int, slot: str, ob: str, cb: str):
+    def _rewrite_line(self, line_no: int, slot: str, ob: str, cb: str, suffix: str = ""):
         line = self.text.get(f"{line_no}.0", f"{line_no}.end")
         indent = line[: len(line) - len(line.lstrip())]
         self.text.delete(f"{line_no}.0", f"{line_no}.end")
-        self.text.insert(f"{line_no}.0", indent + self._relabel(line.strip(), slot, ob, cb))
+        self.text.insert(f"{line_no}.0",
+                         indent + self._relabel(line.strip(), slot, ob, cb, suffix))
 
     def _assign(self, line_no: int, slot: str):
         """行のテキストにキャスト記法を書き込む（ドロップ＝テキスト編集。Ctrl+Z で戻せる）。"""
         if not self.text.get(f"{line_no}.0", f"{line_no}.end").strip():
             return
         ob, cb = self._env()["markers"].get("brackets") or ["『", "』"]
-        self.text.configure(autoseparators=False)  # 削除＋挿入をアンドゥ1回ぶんにまとめる
+        suffix = self._active_style.get(slot, "")
+        self.text.configure(autoseparators=False)
         try:
             self.text.edit_separator()
-            self._rewrite_line(line_no, slot, ob, cb)
+            self._rewrite_line(line_no, slot, ob, cb, suffix)
             self.text.edit_separator()
         finally:
             self.text.configure(autoseparators=True)
 
-    def auto_assign(self, shuffle: bool):
-        """登録キャストを台本全体に一括で割り振る（順=A→B→C…の輪番、
-        ランダム=直前と同じキャストの連続だけ避ける）。既存のラベルも振り直す。
-        警告行・コードブロック・空行はスキップ。Ctrl+Z 一発で全部戻る。"""
+    def auto_assign(self, shuffle: bool, unset_only: bool = False):
+        """登録キャストを台本に一括で割り振る。unset_only=True なら未設定の行だけ。
+        順=A→B→C…の輪番、ランダム=直前と同じキャストの連続だけ避ける。
+        Ctrl+Z 一発で全部戻る。"""
         slots = [s for s in CAST_SLOTS if s in speak.load_config().get("cast", {})]
         if not slots:
             return
         env = self._env()
         ob, cb = env["markers"].get("brackets") or ["『", "』"]
         info = self._classify(self.text.get("1.0", "end-1c").split("\n"), env)
-        targets = [i for i, (kind, _s, _c) in enumerate(info, 1)
-                   if kind in ("cast", "other", "default", "silent")]
+        if unset_only:
+            targets = [i for i, (kind, _s, _c) in enumerate(info, 1)
+                       if kind in ("default", "silent")]
+        else:
+            targets = [i for i, (kind, _s, _c) in enumerate(info, 1)
+                       if kind in ("cast", "other", "default", "silent")]
         if not targets:
             return
         self.text.configure(autoseparators=False)
@@ -1533,7 +1841,8 @@ class ScriptTab(ttk.Frame):
                 else:
                     slot = slots[n % len(slots)]
                 prev = slot
-                self._rewrite_line(line_no, slot, ob, cb)
+                self._rewrite_line(line_no, slot, ob, cb,
+                                   self._active_style.get(slot, ""))
             self.text.edit_separator()
         finally:
             self.text.configure(autoseparators=True)
@@ -1894,6 +2203,11 @@ def apply_dark_theme(root: tk.Tk):
     style.configure("Playing.TButton", background=ACCENT, foreground="#1f1f1f")
     style.map("Playing.TButton", background=[("active", "#e6c34d")],
               foreground=[("active", "#1f1f1f")])
+    # 未割り振り行があるときの「キャスト割り振り」: 枠を金にして穴埋め催促
+    style.configure("Nudge.TButton", background="#383838", foreground=ACCENT,
+                    bordercolor=ACCENT)
+    style.map("Nudge.TButton", background=[("active", "#474747")],
+              foreground=[("active", ACCENT)])
     style.configure("TCheckbutton", indicatorbackground=FIELD)
     style.map("TCheckbutton", background=[("active", BG)],
               indicatorforeground=[("selected", ACCENT)])

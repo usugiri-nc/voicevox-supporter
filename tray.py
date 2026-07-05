@@ -34,7 +34,7 @@ TRAY_MUTEX_NAME = "vvtts_tray"
 # --- Win32 定数 ---
 WM_CLOSE = 0x0010
 WM_DESTROY = 0x0002
-WM_LBUTTONUP = 0x0202
+WM_LBUTTONDBLCLK = 0x0203
 WM_RBUTTONUP = 0x0205
 WM_APP = 0x8000
 TRAY_MSG = WM_APP + 1
@@ -90,6 +90,7 @@ user32.TrackPopupMenu.argtypes = [
     ctypes.c_void_p, wintypes.UINT, ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.HWND, ctypes.c_void_p,
 ]
 user32.DestroyMenu.argtypes = [ctypes.c_void_p]
+user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
 user32.LoadIconW.restype = ctypes.c_void_p
 user32.LoadIconW.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
 user32.LoadCursorW.restype = ctypes.c_void_p
@@ -103,6 +104,8 @@ user32.DispatchMessageW.restype = LRESULT
 user32.DispatchMessageW.argtypes = [ctypes.POINTER(wintypes.MSG)]
 kernel32.GetModuleHandleW.restype = wintypes.HMODULE
 kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
+kernel32.CreateMutexW.restype = wintypes.HANDLE
+kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
 kernel32.OpenMutexW.restype = wintypes.HANDLE
 kernel32.OpenMutexW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
 kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
@@ -230,11 +233,16 @@ def set_autostart(enable: bool) -> bool:
     return STARTUP_LINK.exists()
 
 
+_kernel32_le = ctypes.WinDLL("kernel32", use_last_error=True)
+_kernel32_le.CreateMutexW.restype = wintypes.HANDLE
+_kernel32_le.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+
+
 def already_running() -> bool:
     # ハンドルは意図的に閉じない（プロセス生存中ミューテックスを保持し続ける）
     global _tray_mutex
-    _tray_mutex = kernel32.CreateMutexW(None, False, TRAY_MUTEX_NAME)
-    return kernel32.GetLastError() == ERROR_ALREADY_EXISTS
+    _tray_mutex = _kernel32_le.CreateMutexW(None, False, TRAY_MUTEX_NAME)
+    return ctypes.get_last_error() == ERROR_ALREADY_EXISTS
 
 
 def tray_running() -> bool:
@@ -269,6 +277,14 @@ def _make_nid(hwnd) -> NOTIFYICONDATAW:
     return nid
 
 
+def _open_settings():
+    if speak.FROZEN:
+        gui_cmd = [sys.executable, "--gui"]
+    else:
+        gui_cmd = [sys.executable, str(Path(__file__).resolve().parent / "gui.py")]
+    subprocess.Popen(gui_cmd, **speak._detached_popen_kwargs())
+
+
 def _show_menu(hwnd):
     menu = user32.CreatePopupMenu()
     user32.AppendMenuW(menu, MF_STRING | (MF_CHECKED if speak_enabled() else 0), ID_TOGGLE_SPEAK, "読み上げ ON/OFF")
@@ -287,6 +303,7 @@ def _show_menu(hwnd):
     cmd = user32.TrackPopupMenu(
         menu, TPM_RIGHTBUTTON | TPM_RETURNCMD | TPM_NONOTIFY, pt.x, pt.y, 0, hwnd, None
     )
+    user32.PostMessageW(hwnd, 0, 0, 0)  # WM_NULL: メニュー外クリック後の再表示が効かなくなる問題の回避
     user32.DestroyMenu(menu)
 
     if cmd == ID_TOGGLE_SPEAK:
@@ -299,11 +316,7 @@ def _show_menu(hwnd):
         if not set_autostart(not autostart_enabled()):
             user32.MessageBoxW(None, "スタートアップへの登録に失敗しました", APP_NAME, MB_ICONINFORMATION)
     elif cmd == ID_SETTINGS:
-        if speak.FROZEN:
-            gui_cmd = [sys.executable, "--gui"]  # exe では launcher の --gui モードで開く
-        else:
-            gui_cmd = [sys.executable, str(Path(__file__).resolve().parent / "gui.py")]
-        subprocess.Popen(gui_cmd, **speak._detached_popen_kwargs())
+        _open_settings()
     elif cmd == ID_EXIT:
         user32.DestroyWindow(hwnd)
 
@@ -324,8 +337,10 @@ def main():
 
     def wnd_proc(hwnd, msg, wparam, lparam):
         if msg == TRAY_MSG:
-            if lparam in (WM_RBUTTONUP, WM_LBUTTONUP):
+            if lparam == WM_RBUTTONUP:
                 _show_menu(hwnd)
+            elif lparam == WM_LBUTTONDBLCLK:
+                _open_settings()
             return 0
         if msg == WM_CLOSE:
             user32.DestroyWindow(hwnd)
