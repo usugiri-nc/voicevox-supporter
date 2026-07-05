@@ -1,0 +1,27 @@
+__pycache__/
+*.pyc
+
+# PyInstaller のビルド生成物（.spec は設計として git 管理する）
+build/
+dist/
+*.zip
+
+# 開発用の内輪メモ（公開リポジトリに含めない）
+HANDOFF.md
+HANDOFF-ARCHIVE.md
+CLAUDE.md
+DESIGN.md
+
+# 実行時に自動生成されるファイル（利用者ごとの内容になる）
+VOICEVOX_SUPPORTER_AI_GUIDE.md
+# 旧名の連携ガイド。改名先への案内板だけ残している
+AI_GUIDE.md
+
+# デザイン検討用の参考画像（他作品のスクリーンショット等・公開不可）
+sample_images/
+
+# 動作確認用のスクリーンショット置き場（内輪メモ）
+check_img/
+
+# 画像編集ソースファイル
+*.af
