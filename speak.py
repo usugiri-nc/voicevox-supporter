@@ -1081,20 +1081,22 @@ def _run_script(text: str, out_path: Path | None, speed: float | None, auto: boo
         sys.exit(1)
 
     # 台本は鑑賞用途なので、既定では文字数による自動加速をかけず等速（速度2）。
-    # --auto 指定時だけ通知と同じ「読み上げ速度の自動調整」（合計文字数で速度3〜5）を使う。
-    # --speed の明示は自動調整より勝ち、数字添字（A1『…』）のセリフはさらに勝つ
+    # --auto 指定時は通知と同じ「読み上げ速度の自動調整」を【セリフ1件ごとの文字数】で判定する
+    # （当初は台本の合計文字数で1つの速度を決めていたが、短い掛け合いまで最速で読まれてしまう。
+    # 2026-07-05 修正）。--speed の明示は自動調整より勝ち、数字添字（A1『…』）のセリフはさらに勝つ
     steps = get_speed_steps(cfg)
-    if speed is not None:
-        spd = speed
-    elif auto:
-        total_chars = sum(len(seg[0]) for seg in segments)
-        spd = calc_auto_speed(total_chars, steps, cfg.get("stepChars"))
-    else:
-        spd = steps[1]
+    step_chars = cfg.get("stepChars")
+
+    def line_speed(line: str) -> float:
+        if speed is not None:
+            return speed
+        if auto:
+            return calc_auto_speed(len(line), steps, step_chars)
+        return steps[1]
 
     def synth_line(seg) -> bytes:
         line, speaker, step = _segment_parts(seg)
-        return _synth_segment(line, speaker, steps[step - 1] if step else spd)
+        return _synth_segment(line, speaker, steps[step - 1] if step else line_speed(line))
 
     if out_path:
         chunks = []
