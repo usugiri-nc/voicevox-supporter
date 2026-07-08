@@ -4,7 +4,7 @@ Usage:
   python speak.py "読み上げたいテキスト"
   python speak.py --bg "テキスト"   # 切り離し再生（すぐ返る・stop で止められる。外部AI・スクリプト向き）
   echo "テキスト" | python speak.py
-  python speak.py --hook          # Claude Code Stop hook mode
+  python speak.py --hook          # 応答完了フック（stdin から JSON を受け取る）
   python speak.py -l              # キャラ一覧
   python speak.py -s 13 "テキスト"  # スピーカー指定
   python speak.py config          # 設定表示
@@ -22,10 +22,10 @@ Usage:
   python speak.py config stepChars 80 200 400       # 速度3〜5に切り替わる文字数（off で自動早口をやめる）
   python speak.py stop            # 再生中の音声を止める（合成中なら中断）
   python speak.py doctor          # 環境診断（何も変更しない）
-  python speak.py install-hook    # Claude Code の Stop フックを自動設定
+  python speak.py install-hook    # Claude Code の Stop フックを設定（他ツールは各自の方法で登録）
   python speak.py on / off / status
 
-Voice notations (in Claude Code responses):
+Voice notations (in AI responses):
   『セリフ』                            # 括弧記法（デフォルト有効）
   『（ささやき）セリフ』                  # スタイル指定
   A『セリフ』                           # キャスト指定（=Aa。1番目のスタイルで発言）
@@ -752,9 +752,10 @@ def _spawn_speak_worker(segments: list, speed: float | None = None):
 
 
 def handle_hook():
-    """Stop フック本体。テキストの検出だけして即終了し、
+    """応答完了フック本体。テキストの検出だけして即終了し、
     合成・再生（時間がかかる）は切り離したワーカープロセスに任せる。
-    こうすることで Claude Code 側の応答完了処理を一切待たせない。"""
+    こうすることで呼び出し元の応答完了処理を一切待たせない。
+    Claude Code / Codex (last_assistant_message) と Gemini CLI (prompt_response) に対応。"""
     if not FLAG_PATH.exists():
         return
 
@@ -764,7 +765,7 @@ def handle_hook():
     except Exception:
         return
 
-    full_text = data.get("last_assistant_message", "")
+    full_text = data.get("last_assistant_message") or data.get("prompt_response", "")
     if not full_text:
         return
 
