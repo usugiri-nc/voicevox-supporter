@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from speak import (
     MIN_ENGINE_VERSION,
     calc_auto_speed,
+    decode_stdin_bytes,
     extract_script_segments,
     extract_voice_segments,
     parse_script_args,
@@ -221,6 +222,12 @@ check_eq("version parse", parse_version("0.25.2"), (0, 25, 2))
 check_eq("version parse preview", parse_version("0.25.2-preview.3"), (0, 25, 2))
 check_eq("version old fails minimum", parse_version("0.9.0") < MIN_ENGINE_VERSION, True)
 check_eq("version short ok", parse_version("1.0") >= MIN_ENGINE_VERSION, True)
+
+# --- Windows PowerShell パイプ入力（cp932）も保持する ---
+check_eq("stdin decode utf-8", decode_stdin_bytes("こんにちは".encode("utf-8")), "こんにちは")
+check_eq("stdin decode utf-8 BOM", decode_stdin_bytes(b"\xef\xbb\xbf" + "こんにちは".encode("utf-8")), "こんにちは")
+check_eq("stdin decode utf-16", decode_stdin_bytes("こんにちは".encode("utf-16")), "こんにちは")
+check_eq("stdin decode cp932", decode_stdin_bytes("こんにちは".encode("cp932")), "こんにちは")
 
 print()
 if failures:

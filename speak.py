@@ -1599,6 +1599,30 @@ def cmd_start():
         print(f"  cast:   {', '.join(pairs)}")
 
 
+def decode_stdin_bytes(raw: bytes) -> str:
+    """Read piped text from UTF-8 tools and Windows PowerShell alike.
+
+    PowerShell 5 may send native-command pipeline text in the active console
+    code page (CP932 on Japanese Windows), while Python can expose stdin as
+    UTF-8.  Decode bytes explicitly so ``speak.py --bg`` keeps Japanese text
+    intact in either case.
+    """
+    # BOMつき入力は先に確定させる。Windows PowerShellのファイル／パイプ
+    # 経路ではUTF-16が現れる場合もある。
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return raw.decode("utf-16").strip()
+    for encoding in ("utf-8-sig", "cp932"):
+        try:
+            return raw.decode(encoding).strip()
+        except UnicodeDecodeError:
+            pass
+    return raw.decode("utf-8", errors="replace").strip()
+
+
+def read_stdin_text() -> str:
+    return decode_stdin_bytes(sys.stdin.buffer.read())
+
+
 def main():
     if sys.stdout and hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -1608,7 +1632,7 @@ def main():
     args = sys.argv[1:]
 
     if not args:
-        text = sys.stdin.read().strip()
+        text = read_stdin_text()
         if text:
             speak(text)
         return
@@ -1708,7 +1732,7 @@ def main():
 
     text = " ".join(text_parts)
     if not text and (background or speaker is not None or speed is not None):
-        text = sys.stdin.read().strip()  # フラグだけの起動は無引数と同じく stdin から読む
+        text = read_stdin_text()  # フラグだけの起動は無引数と同じく stdin から読む
     if text:
         speak(text, speaker=speaker, speed=speed, background=background)
 

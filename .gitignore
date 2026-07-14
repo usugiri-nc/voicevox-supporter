@@ -4,6 +4,8 @@ __pycache__/
 # PyInstaller のビルド生成物（.spec は設計として git 管理する）
 build/
 dist/
+build_*/
+dist_*/
 *.zip
 
 # 開発用の内輪メモ（公開リポジトリに含めない）
@@ -11,6 +13,7 @@ HANDOFF.md
 HANDOFF-ARCHIVE.md
 CLAUDE.md
 DESIGN.md
+AGENTS.md
 
 # 実行時に自動生成されるファイル（利用者ごとの内容になる）
 VOICEVOX_SUPPORTER_AI_GUIDE.md
